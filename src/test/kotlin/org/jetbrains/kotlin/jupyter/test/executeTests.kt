@@ -1,9 +1,15 @@
 package org.jetbrains.kotlin.jupyter.test
 
-import com.beust.klaxon.JsonObject
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import org.jetbrains.kotlin.jupyter.ExecuteRequest
+import org.jetbrains.kotlin.jupyter.ExecutionResult
+import org.jetbrains.kotlin.jupyter.InputReply
 import org.jetbrains.kotlin.jupyter.JupyterSockets
-import org.jetbrains.kotlin.jupyter.Message
-import org.jetbrains.kotlin.jupyter.get
+import org.jetbrains.kotlin.jupyter.KernelStatus
+import org.jetbrains.kotlin.jupyter.MessageType
+import org.jetbrains.kotlin.jupyter.StatusReply
+import org.jetbrains.kotlin.jupyter.StreamResponse
 import org.jetbrains.kotlin.jupyter.jsonObject
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -11,9 +17,10 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import org.zeromq.ZMQ
 import java.util.concurrent.TimeUnit
+import kotlin.test.assertTrue
 
-fun Message.type(): String {
-    return header!!["msg_type"] as String
+fun JsonObject.string(key: String): String {
+    return (get(key) as JsonPrimitive).content
 }
 
 @Timeout(100, unit = TimeUnit.SECONDS)
@@ -35,31 +42,32 @@ class ExecuteTests : KernelServerTestsBase() {
             ioPub.connect()
             stdin.connect()
 
-            shell.sendMessage("execute_request", content = jsonObject("code" to code))
+            shell.sendMessage(MessageType.EXECUTE_REQUEST, content = ExecuteRequest(code))
             inputs.forEach {
-                stdin.sendMessage("input_reply", jsonObject("value" to it))
+                stdin.sendMessage(MessageType.INPUT_REPLY, InputReply(it))
             }
 
             var msg = shell.receiveMessage()
-            assertEquals("execute_reply", msg.type())
+            assertEquals(MessageType.EXECUTE_REPLY, msg.type)
             msg = ioPub.receiveMessage()
-            assertEquals("status", msg.type())
-            assertEquals("busy", msg.content["execution_state"])
+            assertEquals(MessageType.STATUS, msg.type)
+            assertEquals(KernelStatus.BUSY, (msg.content as StatusReply).status)
             msg = ioPub.receiveMessage()
-            assertEquals("execute_input", msg.type())
+            assertEquals(MessageType.EXECUTE_INPUT, msg.type)
 
             ioPubChecker(ioPub)
 
             var response: Any? = null
             if (hasResult) {
                 msg = ioPub.receiveMessage()
-                assertEquals("execute_result", msg.type())
-                response = msg.content["data"]
+                val content = msg.content as ExecutionResult
+                assertEquals(MessageType.EXECUTE_RESULT, msg.type)
+                response = content.data
             }
 
             msg = ioPub.receiveMessage()
-            assertEquals("status", msg.type())
-            assertEquals("idle", msg.content["execution_state"])
+            assertEquals(MessageType.STATUS, msg.type)
+            assertEquals(KernelStatus.IDLE, (msg.content as StatusReply).status)
             return response
         } finally {
             shell.close()
@@ -72,7 +80,7 @@ class ExecuteTests : KernelServerTestsBase() {
     @Test
     fun testExecute() {
         val res = doExecute("2+2") as JsonObject
-        assertEquals("4", res["text/plain"])
+        assertEquals("4", res.string("text/plain"))
     }
 
     @Test
@@ -88,8 +96,8 @@ class ExecuteTests : KernelServerTestsBase() {
         fun checker(ioPub: ZMQ.Socket) {
             for (i in 1..5) {
                 val msg = ioPub.receiveMessage()
-                assertEquals("stream", msg.type())
-                assertEquals(i.toString(), msg.content!!["text"])
+                assertEquals(MessageType.STREAM, msg.type)
+                assertEquals(i.toString(), (msg.content as StreamResponse).text)
             }
         }
 
@@ -112,8 +120,10 @@ class ExecuteTests : KernelServerTestsBase() {
         fun checker(ioPub: ZMQ.Socket) {
             for (el in expected) {
                 val msg = ioPub.receiveMessage()
-                assertEquals("stream", msg.type())
-                assertEquals(el, msg.content!!["text"])
+                val content = msg.content
+                assertEquals(MessageType.STREAM, msg.type)
+                assertTrue(content is StreamResponse)
+                assertEquals(el, content.text)
             }
         }
 
@@ -134,8 +144,8 @@ class ExecuteTests : KernelServerTestsBase() {
         fun checker(ioPub: ZMQ.Socket) {
             for (i in 1..5) {
                 val msg = ioPub.receiveMessage()
-                assertEquals("stream", msg.type())
-                assertEquals("text$i" + System.lineSeparator(), msg.content!!["text"])
+                assertEquals(MessageType.STREAM, msg.type)
+                assertEquals("text$i" + System.lineSeparator(), (msg.content as StreamResponse).text)
             }
         }
 
